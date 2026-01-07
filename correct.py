@@ -231,7 +231,6 @@ if __name__ == "__main__":
     
     # 2. 结果保存文件夹
     OUTPUT_FOLDER = r"D:\\Desktop\\correct"
-    
     # ===========================================
 
     process_batch(INPUT_FOLDER, OUTPUT_FOLDER)
