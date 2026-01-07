@@ -234,3 +234,4 @@ if __name__ == "__main__":
     # ===========================================
 
     process_batch(INPUT_FOLDER, OUTPUT_FOLDER)
+#########直接进行透视校正

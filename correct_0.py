@@ -298,3 +298,4 @@ if __name__ == "__main__":
 
     # 3. 开始处理
     process_batch(INPUT_FOLDER, OUTPUT_FOLDER, target_ar)
+###########增加畸变系数调整，增加校正前后对比功能
