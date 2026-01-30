@@ -59,7 +59,7 @@ def undistort_image(img, k_value):
     return cv2.undistort(img, cam_matrix, dist_coeffs)
 
 def manual_undistort_gui(img_origin):
-    """ 阶段1：手动去畸变 """
+    """ 阶段1：手动去畸变 (修改版：返回 k1 值) """
     def nothing(x): pass
     cv2.namedWindow(window_distort, cv2.WINDOW_NORMAL)
     cv2.createTrackbar("K1 (Distort)", window_distort, 100, 200, nothing)
@@ -78,10 +78,11 @@ def manual_undistort_gui(img_origin):
         key = cv2.waitKey(10) & 0xFF
         if key == 13: # Enter
             cv2.destroyWindow(window_distort)
-            return undistorted, False
+            # 修改：返回处理后的图，K1值，以及是否跳过的标志
+            return undistorted, k1, False
         elif key == ord('d'): 
             cv2.destroyWindow(window_distort)
-            return None, True
+            return None, 0, True
         elif key == ord('q'): sys.exit()
 
 def order_points(pts):
@@ -106,13 +107,7 @@ def draw_cursor_crosshair(img, x, y):
     cv2.line(img, (0, y), (w, y), color, 1)
     cv2.line(img, (x, 0), (x, h), color, 1)
 
-# 【新增】计算两条直线的交点
 def compute_line_intersection(line1, line2):
-    """
-    line1: [(x1, y1), (x2, y2)]
-    line2: [(x3, y3), (x4, y4)]
-    返回 (x, y) 或 None (如果平行)
-    """
     p1, p2 = np.array(line1[0]), np.array(line1[1])
     p3, p4 = np.array(line2[0]), np.array(line2[1])
     
@@ -129,52 +124,42 @@ def compute_line_intersection(line1, line2):
     return (int(px), int(py))
 
 # ==============================================
-#          模式1：辅助线交点定位法 (大幅修改)
+#          模式1：辅助线交点定位法
 # ==============================================
 def refresh_mode1_display():
     global img_display, img_undistorted, points, mode1_state
     img_display = img_undistorted.copy()
     h, w = img_display.shape[:2]
     
-    # 1. 绘制已确定的角点
     for i, pt in enumerate(points):
         cv2.circle(img_display, (int(pt[0]), int(pt[1])), 5, (0, 0, 255), -1)
         cv2.putText(img_display, f"P{i+1}", (int(pt[0]) + 10, int(pt[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-    # 2. 绘制当前正在画的线 (拖拽中)
     if mode1_state["drag_start"] and mode1_state["drag_curr"]:
         p1 = mode1_state["drag_start"]
         p2 = mode1_state["drag_curr"]
-        cv2.line(img_display, p1, p2, (255, 0, 0), 2) # 蓝色实线
-        # 延长线效果
+        cv2.line(img_display, p1, p2, (255, 0, 0), 2)
         dx, dy = p2[0]-p1[0], p2[1]-p1[1]
         cv2.line(img_display, p2, (p2[0]+dx*10, p2[1]+dy*10), (255, 0, 0), 1)
 
-    # 3. 绘制已经画好的辅助线 (当前角的)
     for line in mode1_state["step_lines"]:
-        cv2.line(img_display, line[0], line[1], (0, 255, 0), 2) # 绿色实线
-        # 画长一点的延长线示意
+        cv2.line(img_display, line[0], line[1], (0, 255, 0), 2)
         p1, p2 = line[0], line[1]
         dx, dy = p2[0]-p1[0], p2[1]-p1[1]
-        # 向两端延长
         ext_p1 = (int(p1[0]-dx*10), int(p1[1]-dy*10))
         ext_p2 = (int(p2[0]+dx*10), int(p2[1]+dy*10))
         cv2.line(img_display, ext_p1, ext_p2, (0, 255, 0), 1)
 
-    # 4. 如果有两条线，计算并绘制交点
     if len(mode1_state["step_lines"]) == 2:
         inter = compute_line_intersection(mode1_state["step_lines"][0], mode1_state["step_lines"][1])
         mode1_state["intersection"] = inter
         if inter:
-            # 绘制交点 (粉色)
             cv2.circle(img_display, inter, 6, (255, 0, 255), -1)
             cv2.circle(img_display, inter, 10, (255, 0, 255), 2)
-            # 提示文字
             cv2.putText(img_display, "Intersection Found!", (inter[0]+15, inter[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,0,255), 2)
     else:
         mode1_state["intersection"] = None
 
-    # 5. UI文字指引
     info_y = 30
     if len(points) < 4:
         cv2.putText(img_display, f"Finding Point {len(points)+1}/4...", (10, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
@@ -187,7 +172,6 @@ def refresh_mode1_display():
             cv2.putText(img_display, ">> Press [Enter] to Confirm Point", (10, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
             cv2.putText(img_display, ">> Press [R] to Redraw lines", (10, info_y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
 
-    # 6. 光标
     cx, cy = mode1_state["curr_mouse"]
     draw_cursor_crosshair(img_display, cx, cy)
 
@@ -199,32 +183,22 @@ def mode1_mouse(event, x, y, flags, param):
     mode1_state["curr_mouse"] = (x, y)
     need_refresh = False
 
-    # 只有在还没有确定4个点时才允许操作
     if len(points) < 4:
-        # 如果还没画满两条辅助线，允许画线
         if len(mode1_state["step_lines"]) < 2:
-            
-            # 按下：开始画线
             if event == cv2.EVENT_LBUTTONDOWN:
                 mode1_state["drag_start"] = (x, y)
                 mode1_state["drag_curr"] = (x, y)
                 need_refresh = True
-            
-            # 拖动：更新线终点
             elif event == cv2.EVENT_MOUSEMOVE:
                 if mode1_state["drag_start"]:
                     mode1_state["drag_curr"] = (x, y)
                     need_refresh = True
                 else:
-                    # 即使不拖动也要刷新光标
                     need_refresh = True
-
-            # 松开：结束画线，存入列表
             elif event == cv2.EVENT_LBUTTONUP:
                 if mode1_state["drag_start"]:
                     start_pt = mode1_state["drag_start"]
                     end_pt = (x, y)
-                    # 避免点一下也算直线的误操作 (长度太短忽略)
                     dist = np.linalg.norm(np.array(start_pt) - np.array(end_pt))
                     if dist > 5: 
                         mode1_state["step_lines"].append((start_pt, end_pt))
@@ -232,9 +206,7 @@ def mode1_mouse(event, x, y, flags, param):
                     mode1_state["drag_start"] = None
                     mode1_state["drag_curr"] = None
                     need_refresh = True
-        
         else:
-            # 两条线都画好了，只响应移动光标
             if event == cv2.EVENT_MOUSEMOVE:
                 need_refresh = True
 
@@ -244,7 +216,6 @@ def mode1_mouse(event, x, y, flags, param):
 def run_mode1():
     global points, mode1_state
     points = []
-    # 初始化状态
     mode1_state = {
         "step_lines": [], 
         "drag_start": None, "drag_curr": None, 
@@ -256,38 +227,25 @@ def run_mode1():
     refresh_mode1_display()
     
     print("   >>> [模式1] 辅助线交点定位法")
-    print("       1. 拖拽鼠标画第一条边。")
-    print("       2. 拖拽鼠标画第二条边。")
-    print("       3. 确认交点位置后按 Enter 键。")
     
     while True:
         k = cv2.waitKey(20) & 0xFF
-        
-        # 完成所有点
         if len(points) == 4:
             cv2.destroyWindow(window_select_mode1)
             return np.array(points, dtype="float32")
         
-        # 确认交点 (Enter)
         if k == 13: 
             if mode1_state["intersection"] is not None:
-                # 存入交点
                 points.append(list(mode1_state["intersection"]))
-                # 清空辅助线，准备下一个点
                 mode1_state["step_lines"] = []
                 mode1_state["intersection"] = None
                 refresh_mode1_display()
-        
-        # 重绘当前点的辅助线 (R)
         elif k == ord('r'):
             if points and len(mode1_state["step_lines"]) == 0:
-                # 如果当前没有线，可能是想撤销上一个确定的点
                 points.pop()
-            # 无论如何清空当前辅助线
             mode1_state["step_lines"] = []
             mode1_state["intersection"] = None
             refresh_mode1_display()
-
         elif k == ord('q'): sys.exit()
         elif k == ord('d'): cv2.destroyWindow(window_select_mode1); return None
 
@@ -295,7 +253,6 @@ def run_mode1():
 #                 模式2：绘制矩形 + 透视内切圆微调
 # ==============================================
 def get_perspective_circle_contour(pts, steps=100):
-    """ 计算给定4个顶点(透视平面)下的内切圆轮廓 """
     if len(pts) != 4: return []
     src_rect = np.array([[0,0], [1,0], [1,1], [0,1]], dtype=np.float32)
     dst_rect = np.array(pts, dtype=np.float32)
@@ -313,25 +270,20 @@ def refresh_mode2_display():
     global img_display, img_undistorted, mode2_state
     img_display = img_undistorted.copy()
     
-    # --- 阶段 0: 绘制初始矩形 ---
     if mode2_state["phase"] == 0:
         cv2.putText(img_display, "Step 1: Drag to draw a box around the object", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255), 2)
         if mode2_state["rect_start"] and mode2_state["rect_curr"]:
             cv2.rectangle(img_display, mode2_state["rect_start"], mode2_state["rect_curr"], (0, 255, 0), 2)
             
-    # --- 阶段 1: 顶点编辑 (核心) ---
     elif mode2_state["phase"] == 1:
         pts = mode2_state["pts"]
-        # 1. 绘制外部四边形框
         for i in range(4):
             p1 = tuple(pts[i].astype(int))
             p2 = tuple(pts[(i+1)%4].astype(int))
             cv2.line(img_display, p1, p2, (255, 200, 0), 1)
-        # 2. 绘制透视内切圆
         circle_cnt = get_perspective_circle_contour(pts)
         if len(circle_cnt) > 0:
             cv2.polylines(img_display, [circle_cnt], True, (0, 255, 255), 2)
-        # 3. 绘制4个顶点控制柄
         for i, p in enumerate(pts):
             color = (0, 0, 255) if i == mode2_state["selected_idx"] else (0, 255, 0)
             cv2.circle(img_display, tuple(p.astype(int)), 6, color, -1)
@@ -339,7 +291,6 @@ def refresh_mode2_display():
         cv2.putText(img_display, "Step 2: Drag corners to fit the INNER CIRCLE", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
         cv2.putText(img_display, "L-Drag: Corner | R-Drag: Move All | [Arrows]: Fine Tune", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 1)
 
-    # 绘制十字光标
     mx, my = mode2_state["current_mouse_pos"]
     draw_cursor_crosshair(img_display, mx, my)
     cv2.imshow(window_select_mode2, img_display)
@@ -349,7 +300,6 @@ def mode2_mouse(event, x, y, flags, param):
     mode2_state["current_mouse_pos"] = (x, y)
     need_refresh = False
 
-    # === 阶段 0: 初始拉框 ===
     if mode2_state["phase"] == 0:
         if event == cv2.EVENT_LBUTTONDOWN:
             mode2_state["rect_start"] = (x, y)
@@ -367,7 +317,6 @@ def mode2_mouse(event, x, y, flags, param):
             mode2_state["phase"] = 1
             need_refresh = True
 
-    # === 阶段 1: 顶点精调 ===
     elif mode2_state["phase"] == 1:
         pts = mode2_state["pts"]
         if event == cv2.EVENT_MOUSEMOVE:
@@ -417,8 +366,6 @@ def run_mode2():
     refresh_mode2_display()
     
     print("\n   >>> [模式2] 操作说明：")
-    print("       1. [鼠标左键拖拽] 绘制矩形。")
-    print("       2. [精调] 拖动4个角贴合内切圆。")
     
     while True:
         key = cv2.waitKey(10) & 0xFF
@@ -449,7 +396,7 @@ def run_mode2():
 
 
 # ==============================================
-#                 通用转换与批处理 (未修改)
+#                 通用转换与批处理 (已修改)
 # ==============================================
 def four_point_transform_fixed_ratio(image, pts, target_ratio):
     rect = order_points(pts)
@@ -482,6 +429,11 @@ def process_batch(input_dir, output_dir, target_ratio):
 
     print(f"=== 开始处理 {len(file_list)} 张图片 ===")
 
+    # 用于存储第一张图（模板）的参数
+    template_params_set = False
+    fixed_k1 = 0.0
+    fixed_pts = None
+
     for idx, filename in enumerate(file_list):
         file_path = os.path.join(input_dir, filename)
         output_path = os.path.join(output_dir, f"corrected_{filename}")
@@ -493,85 +445,121 @@ def process_batch(input_dir, output_dir, target_ratio):
         img_raw = cv2.imread(file_path)
         if img_raw is None: continue
 
-        # 1. 畸变校正
-        img_undistorted, skip = manual_undistort_gui(img_raw)
-        if skip: continue
-
-        # 2. 模式选择
-        h, w = img_undistorted.shape[:2]
-        msg_img = np.zeros((200, 500, 3), dtype=np.uint8)
-        cv2.putText(msg_img, "Select Mode:", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
-        cv2.putText(msg_img, "1. Auxiliary Lines (Intersect)", (30, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
-        cv2.putText(msg_img, "2. Rect & Inner Circle", (30, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2)
-        
-        cv2.namedWindow("Mode Select", cv2.WINDOW_AUTOSIZE)
-        cv2.imshow("Mode Select", msg_img)
-        
-        mode = 0
-        while True:
-            k = cv2.waitKey(0) & 0xFF
-            if k == ord('1'): mode=1; break
-            if k == ord('2'): mode=2; break
-            if k == ord('q'): sys.exit()
-        cv2.destroyWindow("Mode Select")
-
-        # 执行对应模式
-        if mode == 1:
-            pts_np = run_mode1()
-        else:
-            pts_np = run_mode2()
-
-        if pts_np is None: continue
-
-        # 3. 预览与保存
-        try:
-            warped = four_point_transform_fixed_ratio(img_undistorted, pts_np, target_ratio)
+        # =======================================================
+        # 逻辑分支：如果还没有设置模板参数，则手动操作；否则自动处理
+        # =======================================================
+        if not template_params_set:
+            # --- 手动模式 ---
+            print("   >>> 正在进行参数设定 (此图参数将应用于后续所有图片)")
             
-            comp = img_undistorted.copy()
-            pts_int = pts_np.astype(int)
-            for i in range(4):
-                cv2.line(comp, tuple(pts_int[i]), tuple(pts_int[(i+1)%4]), (0,255,0), 2)
-            
-            if mode == 2:
-                circ_cnt = get_perspective_circle_contour(pts_np)
-                cv2.polylines(comp, [circ_cnt], True, (0,255,255), 1)
+            # 1. 畸变校正 GUI
+            # 注意：manual_undistort_gui 现在返回 (img, k1, skip)
+            img_undistorted, k1_val, skip = manual_undistort_gui(img_raw)
+            if skip: continue
 
-            cv2.namedWindow(window_result, cv2.WINDOW_NORMAL)
-            show_warp = True
-            print("   >>> [预览] S保存, C对比, D跳过")
+            # 2. 模式选择
+            h, w = img_undistorted.shape[:2]
+            msg_img = np.zeros((200, 500, 3), dtype=np.uint8)
+            cv2.putText(msg_img, "Select Mode:", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
+            cv2.putText(msg_img, "1. Auxiliary Lines (Intersect)", (30, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+            cv2.putText(msg_img, "2. Rect & Inner Circle", (30, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2)
             
-            saved = False
+            cv2.namedWindow("Mode Select", cv2.WINDOW_AUTOSIZE)
+            cv2.imshow("Mode Select", msg_img)
+            
+            mode = 0
             while True:
-                if show_warp:
-                    cv2.imshow(window_result, warped)
-                    cv2.setWindowTitle(window_result, "3. Result (Corrected) - Press C")
-                else:
-                    cv2.imshow(window_result, comp)
-                    cv2.setWindowTitle(window_result, "3. Result (Original) - Press C")
-
                 k = cv2.waitKey(0) & 0xFF
-                if k == ord('s'): 
-                    cv2.imwrite(output_path, warped)
-                    saved = True; break
-                elif k == ord('c'): show_warp = not show_warp
-                elif k == ord('d'): break
-                elif k == 27: sys.exit()
-            
-            cv2.destroyWindow(window_result)
-            if saved: print(f"   已保存: {output_path}")
+                if k == ord('1'): mode=1; break
+                if k == ord('2'): mode=2; break
+                if k == ord('q'): sys.exit()
+            cv2.destroyWindow("Mode Select")
 
-        except Exception as e:
-            print(f"   错误: {e}")
+            # 执行对应模式
+            if mode == 1:
+                pts_np = run_mode1()
+            else:
+                pts_np = run_mode2()
+
+            if pts_np is None: continue
+
+            # 3. 预览与保存 (确认模板参数)
+            try:
+                warped = four_point_transform_fixed_ratio(img_undistorted, pts_np, target_ratio)
+                
+                comp = img_undistorted.copy()
+                pts_int = pts_np.astype(int)
+                for i in range(4):
+                    cv2.line(comp, tuple(pts_int[i]), tuple(pts_int[(i+1)%4]), (0,255,0), 2)
+                
+                if mode == 2:
+                    circ_cnt = get_perspective_circle_contour(pts_np)
+                    cv2.polylines(comp, [circ_cnt], True, (0,255,255), 1)
+
+                cv2.namedWindow(window_result, cv2.WINDOW_NORMAL)
+                show_warp = True
+                print("   >>> [预览] S保存并应用到全部, C对比, D跳过当前")
+                
+                saved = False
+                while True:
+                    if show_warp:
+                        cv2.imshow(window_result, warped)
+                        cv2.setWindowTitle(window_result, "3. Result (Corrected) - Press C")
+                    else:
+                        cv2.imshow(window_result, comp)
+                        cv2.setWindowTitle(window_result, "3. Result (Original) - Press C")
+
+                    k = cv2.waitKey(0) & 0xFF
+                    if k == ord('s'): 
+                        cv2.imwrite(output_path, warped)
+                        saved = True
+                        break
+                    elif k == ord('c'): show_warp = not show_warp
+                    elif k == ord('d'): break
+                    elif k == 27: sys.exit()
+                
+                cv2.destroyWindow(window_result)
+                
+                if saved: 
+                    print(f"   已保存: {output_path}")
+                    # === 核心修改：保存参数，锁定后续操作 ===
+                    fixed_k1 = k1_val
+                    fixed_pts = pts_np
+                    template_params_set = True
+                    print("   >>> 参数已锁定！后续图片将自动处理...")
+                    # ===================================
+
+            except Exception as e:
+                print(f"   错误: {e}")
+
+        else:
+            # =======================================================
+            # 自动批处理模式 (使用保存的 fixed_k1 和 fixed_pts)
+            # =======================================================
+            try:
+                # 1. 自动去畸变
+                img_undistorted = undistort_image(img_raw, fixed_k1)
+                
+                # 2. 自动透视变换
+                warped = four_point_transform_fixed_ratio(img_undistorted, fixed_pts, target_ratio)
+                
+                # 3. 自动保存
+                cv2.imwrite(output_path, warped)
+                print(f"   [自动处理] 已保存: {output_path}")
+                
+            except Exception as e:
+                print(f"   [自动处理失败]: {e}")
 
     cv2.destroyAllWindows()
     print("\n所有任务完成。")
 
 if __name__ == "__main__":
     # 路径配置
-    INPUT_FOLDER = r"D:\\Desktop\\phone" 
-    OUTPUT_FOLDER = r"D:\\Desktop\\correct"
+    INPUT_FOLDER = r"D:\\Desktop\\A" 
+    OUTPUT_FOLDER = r"D:\\Desktop\\B"
+    #INPUT_FOLDER = r"D:\\Desktop\\phone" 
+    #OUTPUT_FOLDER = r"D:\\Desktop\\correct"
     
     target_ar = get_user_aspect_ratio()
     process_batch(INPUT_FOLDER, OUTPUT_FOLDER, target_ar)
-
-###########增加辅助线绘制,指定解释器，E:/Test/wood_ring/python.exe F:\Project\correct\correct_0_4.py
+#########固定参数,E:/Test/wood_ring/python.exe F:\Project\correct\correct_0_5.py
